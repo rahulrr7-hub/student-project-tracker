@@ -1,351 +1,431 @@
+```javascript
+document.addEventListener('DOMContentLoaded', () => {
+    const form = document.querySelector('#project-form');
+    const nameInput = document.querySelector('#name');
+    const statusInput = document.querySelector('#status');
+    const list = document.querySelector('#project-list');
+    const emptyState = document.querySelector('#empty-state');
+    const message = document.querySelector('#message');
+    const saveButton = document.querySelector('#save-button');
+    const cancelButton = document.querySelector('#cancel-button');
 
-const form = document.querySelector('#project-form');
-const nameInput = document.querySelector('#name');
-const statusInput = document.querySelector('#status');
-const projectList = document.querySelector('#project-list');
-const emptyState = document.querySelector('#empty-state');
-const saveButton = document.querySelector('#save-button');
-const cancelButton = document.querySelector('#cancel-button');
-const formTitle = document.querySelector('#form-title');
-const message = document.querySelector('#message');
+    // The API remains the source of truth for project records.
+    let projects = [];
+    let editingId = null;
+    let loading = true;
+    let saving = false;
+    let loadState = 'loading';
+    let mutationType = null;
 
-const allowedStatuses = ['Planned', 'In Progress', 'Completed'];
+    const addLabel = saveButton.textContent;
 
-let projects = [];
-let editingId = null;
-let projectsLoaded = false;
-let busy = false;
+    cancelButton.type = 'button';
+    cancelButton.hidden = true;
 
-function setMessage(text) {
-    message.textContent = text;
-}
-
-function setBusy(value) {
-    busy = value;
-
-    saveButton.disabled = busy;
-    cancelButton.disabled = busy;
-
-    nameInput.disabled = busy;
-    statusInput.disabled = busy;
-
-    projectList.querySelectorAll('button').forEach(button => {
-        button.disabled = busy;
-    });
-}
-
-function sameId(first, second) {
-    return String(first) === String(second);
-}
-
-function validateProjects(value) {
-    if (!Array.isArray(value)) {
-        throw new Error('The server returned an invalid project list.');
+    function showMessage(text, type = 'info') {
+        message.textContent = text;
+        message.dataset.type = type;
     }
 
-    const uniqueProjects = new Map();
+    function updateButtonState() {
+        const disabled = loading || saving;
 
-    for (const project of value) {
-        if (
-            !project ||
-            typeof project !== 'object' ||
-            Array.isArray(project) ||
-            !['string', 'number'].includes(typeof project.id) ||
-            String(project.id).length === 0 ||
-            typeof project.name !== 'string' ||
-            !project.name.trim() ||
-            !allowedStatuses.includes(project.status)
-        ) {
-            throw new Error('The server returned invalid project data.');
-        }
+        nameInput.disabled = disabled;
+        statusInput.disabled = disabled;
+        saveButton.disabled = disabled;
+        cancelButton.disabled = disabled;
 
-        const key = String(project.id);
-
-        if (!uniqueProjects.has(key)) {
-            uniqueProjects.set(key, {
-                id: project.id,
-                name: project.name,
-                status: project.status
-            });
-        }
-    }
-
-    return Array.from(uniqueProjects.values());
-}
-
-async function getErrorMessage(response) {
-    try {
-        const body = await response.json();
-
-        if (typeof body.error === 'string' && body.error.trim()) {
-            return body.error;
-        }
-
-        if (typeof body.message === 'string' && body.message.trim()) {
-            return body.message;
-        }
-    } catch {
-        // The server may return an empty or non-JSON error response.
-    }
-
-    return `Request failed (${response.status} ${response.statusText || 'HTTP error'}).`;
-}
-
-async function requestJSON(url, options = {}) {
-    let response;
-
-    try {
-        response = await fetch(url, options);
-    } catch {
-        throw new Error(
-            'Could not connect to the server. Check that it is running and try again.'
-        );
-    }
-
-    if (!response.ok) {
-        throw new Error(await getErrorMessage(response));
-    }
-
-    return response;
-}
-
-async function loadProjects({ showLoading = true } = {}) {
-    if (showLoading) {
-        setMessage('Loading projects…');
-    }
-
-    try {
-        const response = await requestJSON('/api/projects');
-        const data = await response.json();
-        const loadedProjects = validateProjects(data);
-
-        projects = loadedProjects;
-        projectsLoaded = true;
-
-        if (
-            editingId !== null &&
-            !projects.some(project => sameId(project.id, editingId))
-        ) {
-            resetForm();
-            setMessage('The project being edited no longer exists.');
-        }
-
-        renderProjects();
-
-        return true;
-    } catch (error) {
-        if (!projectsLoaded) {
-            // A failed initial request must not look like an empty list.
-            emptyState.hidden = true;
-            projectList.textContent = '';
-        }
-
-        setMessage(error.message || 'Could not load projects.');
-        return false;
-    }
-}
-
-function renderProjects() {
-    projectList.textContent = '';
-
-    for (const project of projects) {
-        const listItem = document.createElement('li');
-        const projectName = document.createElement('span');
-        const projectStatus = document.createElement('span');
-        const editButton = document.createElement('button');
-        const deleteButton = document.createElement('button');
-
-        // Use textContent so project names are displayed as text.
-        projectName.textContent = project.name;
-        projectStatus.textContent = ` — ${project.status}`;
-
-        editButton.type = 'button';
-        editButton.textContent = 'Edit';
-        editButton.disabled = busy;
-
-        editButton.addEventListener('click', () => {
-            if (busy) return;
-
-            editingId = project.id;
-
-            nameInput.value = project.name;
-            statusInput.value = project.status;
-
-            saveButton.textContent = 'Save changes';
-            cancelButton.hidden = false;
-            formTitle.textContent = 'Edit Project';
-
-            setMessage('');
-            nameInput.focus();
+        list.querySelectorAll('button').forEach((button) => {
+            button.disabled = disabled;
         });
 
-        deleteButton.type = 'button';
-        deleteButton.textContent = 'Delete';
-        deleteButton.disabled = busy;
+        if (saving && mutationType === 'delete') {
+            saveButton.textContent = 'Deleting...';
+        } else if (saving) {
+            saveButton.textContent =
+                editingId === null ? 'Adding...' : 'Saving...';
+        } else {
+            saveButton.textContent =
+                editingId === null ? addLabel : 'Save changes';
+        }
+    }
 
-        deleteButton.addEventListener('click', async () => {
-            if (busy) return;
+    async function readResponse(response) {
+        const data = await response.json().catch(() => null);
 
-            const confirmed = window.confirm(
-                `Are you sure you want to delete "${project.name}"?`
+        if (!response.ok) {
+            throw new Error(
+                data?.error ||
+                data?.message ||
+                `Request failed (HTTP ${response.status}).`
+            );
+        }
+
+        return data;
+    }
+
+    function setAddMode({ resetForm = true } = {}) {
+        editingId = null;
+
+        if (resetForm) {
+            form.reset();
+        }
+
+        nameInput.setCustomValidity('');
+        cancelButton.hidden = true;
+        updateButtonState();
+    }
+
+    function startEdit(id) {
+        const project = projects.find(
+            (item) => String(item.id) === String(id)
+        );
+
+        if (!project || loading || saving) {
+            return;
+        }
+
+        editingId = project.id;
+        nameInput.value = project.name;
+        statusInput.value = project.status;
+
+        nameInput.setCustomValidity('');
+        cancelButton.hidden = false;
+
+        showMessage(`Editing "${project.name}".`, 'info');
+        updateButtonState();
+        nameInput.focus();
+    }
+
+    function render() {
+        list.textContent = '';
+
+        projects.forEach((project) => {
+            const item = document.createElement('li');
+            item.dataset.id = String(project.id);
+
+            const nameElement = document.createElement('strong');
+            // Entered project names are rendered as text, never HTML.
+            nameElement.textContent = project.name;
+
+            const statusElement = document.createElement('span');
+            statusElement.textContent = ` - ${project.status} `;
+
+            const editButton = document.createElement('button');
+            editButton.type = 'button';
+            editButton.textContent = 'Edit';
+            editButton.addEventListener('click', () => {
+                startEdit(project.id);
+            });
+
+            const deleteButton = document.createElement('button');
+            deleteButton.type = 'button';
+            deleteButton.textContent = 'Delete';
+            deleteButton.addEventListener('click', () => {
+                deleteProject(project.id);
+            });
+
+            item.append(
+                nameElement,
+                statusElement,
+                editButton,
+                deleteButton
             );
 
-            if (!confirmed) {
+            list.appendChild(item);
+        });
+
+        // Show the empty state only after a successful load.
+        emptyState.hidden = !(
+            loadState === 'loaded' && projects.length === 0
+        );
+
+        updateButtonState();
+    }
+
+    async function loadProjects({ showLoading = false } = {}) {
+        loading = true;
+
+        if (showLoading) {
+            loadState = 'loading';
+            showMessage('Loading projects...', 'loading');
+        }
+
+        updateButtonState();
+
+        try {
+            const response = await fetch('/api/projects');
+            const data = await readResponse(response);
+
+            if (!Array.isArray(data)) {
+                throw new Error(
+                    'The server returned an invalid project list.'
+                );
+            }
+
+            projects = data;
+            loadState = 'loaded';
+
+            if (
+                editingId !== null &&
+                !projects.some(
+                    (project) =>
+                        String(project.id) === String(editingId)
+                )
+            ) {
+                setAddMode();
+                showMessage(
+                    'The project being edited no longer exists. ' +
+                    'The list has been refreshed.',
+                    'info'
+                );
+            }
+
+            render();
+            return true;
+        } catch (error) {
+            loadState = 'error';
+
+            showMessage(
+                `Could not load projects: ${
+                    error.message ||
+                    'Network error. Check that the server is running.'
+                }`,
+                'error'
+            );
+
+            // Do not claim the collection is empty after a failed load.
+            render();
+            return false;
+        } finally {
+            loading = false;
+            updateButtonState();
+        }
+    }
+
+    async function saveProject(event) {
+        event.preventDefault();
+
+        if (loading || saving) {
+            return;
+        }
+
+        const name = nameInput.value.trim();
+        const status = statusInput.value;
+
+        if (name === '') {
+            nameInput.setCustomValidity(
+                'Please enter a project name.'
+            );
+            nameInput.reportValidity();
+            nameInput.focus();
+            return;
+        }
+
+        if (name.length > 80) {
+            nameInput.setCustomValidity(
+                'Project names must be 80 characters or fewer.'
+            );
+            nameInput.reportValidity();
+            nameInput.focus();
+            return;
+        }
+
+        nameInput.setCustomValidity('');
+
+        const isEditing = editingId !== null;
+        const targetId = editingId;
+
+        if (
+            isEditing &&
+            !projects.some(
+                (project) =>
+                    String(project.id) === String(targetId)
+            )
+        ) {
+            setAddMode({ resetForm: false });
+            showMessage(
+                'This project is no longer in the list. ' +
+                'Reload the projects and try again.',
+                'error'
+            );
+            return;
+        }
+
+        const url = isEditing
+            ? `/api/projects/${encodeURIComponent(targetId)}`
+            : '/api/projects';
+
+        const method = isEditing ? 'PUT' : 'POST';
+
+        saving = true;
+        mutationType = isEditing ? 'update' : 'create';
+
+        showMessage(
+            isEditing ? 'Saving changes...' : 'Adding project...',
+            'loading'
+        );
+
+        updateButtonState();
+
+        try {
+            const response = await fetch(url, {
+                method,
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({ name, status })
+            });
+
+            await readResponse(response);
+
+            // Refresh the server's authoritative project collection.
+            const loaded = await loadProjects();
+
+            if (!loaded) {
+                showMessage(
+                    'The change was accepted by the server, but the ' +
+                    'project list could not be refreshed. Reload the ' +
+                    'list before trying again.',
+                    'error'
+                );
                 return;
             }
 
-            await deleteProject(project);
-        });
+            setAddMode();
 
-        listItem.appendChild(projectName);
-        listItem.appendChild(projectStatus);
-        listItem.appendChild(document.createTextNode(' '));
-        listItem.appendChild(editButton);
-        listItem.appendChild(document.createTextNode(' '));
-        listItem.appendChild(deleteButton);
+            showMessage(
+                isEditing
+                    ? 'Project updated successfully.'
+                    : 'Project added successfully.',
+                'success'
+            );
 
-        projectList.appendChild(listItem);
-    }
-
-    emptyState.hidden = !projectsLoaded || projects.length > 0;
-    setBusy(busy);
-}
-
-function resetForm() {
-    form.reset();
-
-    editingId = null;
-
-    saveButton.textContent = 'Save Project';
-    cancelButton.hidden = true;
-    formTitle.textContent = 'Add or Edit Project';
-}
-
-async function refreshAfterMutation(successMessage) {
-    const refreshed = await loadProjects({ showLoading: false });
-
-    if (refreshed) {
-        setMessage(successMessage);
-    } else {
-        setMessage(
-            `${successMessage} However, the project list could not be refreshed: ${message.textContent}`
-        );
-    }
-}
-
-form.addEventListener('submit', async event => {
-    event.preventDefault();
-
-    if (busy) return;
-
-    if (!projectsLoaded) {
-        setMessage('Projects have not loaded successfully. Please try again.');
-        return;
-    }
-
-    const name = nameInput.value.trim();
-    const status = statusInput.value;
-
-    if (!name) {
-        setMessage('Please enter a project name.');
-        nameInput.focus();
-        return;
-    }
-
-    if (name.length > 80) {
-        setMessage('Project names must be 80 characters or fewer.');
-        nameInput.focus();
-        return;
-    }
-
-    if (!allowedStatuses.includes(status)) {
-        setMessage('Please select a valid project status.');
-        return;
-    }
-
-    const wasEditing = editingId !== null;
-    const targetId = editingId;
-
-    if (
-        wasEditing &&
-        !projects.some(project => sameId(project.id, targetId))
-    ) {
-        resetForm();
-        renderProjects();
-        setMessage('The project being edited no longer exists. Please try again.');
-        return;
-    }
-
-    const payload = { name, status };
-    const url = wasEditing
-        ? `/api/projects/${encodeURIComponent(String(targetId))}`
-        : '/api/projects';
-
-    setBusy(true);
-    setMessage(wasEditing ? 'Saving changes…' : 'Saving project…');
-
-    try {
-        await requestJSON(url, {
-            method: wasEditing ? 'PUT' : 'POST',
-            headers: {
-                'Content-Type': 'application/json'
-            },
-            body: JSON.stringify(payload)
-        });
-
-        // Reset only after the server confirms the mutation succeeded.
-        resetForm();
-
-        await refreshAfterMutation(
-            wasEditing ? 'Project updated successfully.' : 'Project added successfully.'
-        );
-
-        if (projectsLoaded) {
             nameInput.focus();
+        } catch (error) {
+            // Preserve the name, status and edit mode for retry.
+            showMessage(
+                `Could not ${isEditing ? 'save changes' : 'add project'}: ${
+                    error.message ||
+                    'Network error. Check that the server is running.'
+                }`,
+                'error'
+            );
+        } finally {
+            saving = false;
+            mutationType = null;
+            updateButtonState();
         }
-    } catch (error) {
-        setMessage(error.message || 'Could not save the project.');
-        // Keep the entered values and edit mode after a failed mutation.
-    } finally {
-        setBusy(false);
-        renderProjects();
     }
-});
 
-async function deleteProject(project) {
-    if (!projectsLoaded || busy) return;
+    async function deleteProject(id) {
+        if (loading || saving) {
+            return;
+        }
 
-    setBusy(true);
-    setMessage('Deleting project…');
-
-    try {
-        await requestJSON(
-            `/api/projects/${encodeURIComponent(String(project.id))}`,
-            { method: 'DELETE' }
+        const project = projects.find(
+            (item) => String(item.id) === String(id)
         );
 
-        if (editingId !== null && sameId(editingId, project.id)) {
-            resetForm();
+        if (!project) {
+            showMessage(
+                'That project is no longer available.',
+                'error'
+            );
+            await loadProjects();
+            return;
         }
 
-        await refreshAfterMutation('Project deleted successfully.');
-    } catch (error) {
-        setMessage(error.message || 'Could not delete the project.');
-    } finally {
-        setBusy(false);
-        renderProjects();
+        // Lock controls before opening confirmation to prevent
+        // multiple confirmation dialogs from repeated clicks.
+        saving = true;
+        mutationType = 'delete';
+        updateButtonState();
+
+        let confirmed;
+
+        try {
+            confirmed = window.confirm(
+                `Delete "${project.name}"?`
+            );
+        } catch (error) {
+            saving = false;
+            mutationType = null;
+            updateButtonState();
+
+            showMessage(
+                'Could not open the delete confirmation.',
+                'error'
+            );
+            return;
+        }
+
+        if (!confirmed) {
+            saving = false;
+            mutationType = null;
+            updateButtonState();
+            showMessage('Deletion cancelled. No changes were made.', 'info');
+            return;
+        }
+
+        showMessage('Deleting project...', 'loading');
+
+        try {
+            const response = await fetch(
+                `/api/projects/${encodeURIComponent(id)}`,
+                { method: 'DELETE' }
+            );
+
+            await readResponse(response);
+
+            if (String(editingId) === String(id) && editingId !== null) {
+                setAddMode();
+            }
+
+            const loaded = await loadProjects();
+
+            if (!loaded) {
+                showMessage(
+                    'The delete request succeeded, but the project ' +
+                    'list could not be refreshed. Reload the list ' +
+                    'before trying again.',
+                    'error'
+                );
+                return;
+            }
+
+            showMessage('Project deleted successfully.', 'success');
+        } catch (error) {
+            showMessage(
+                `Could not delete project: ${
+                    error.message ||
+                    'Network error. Check that the server is running.'
+                }`,
+                'error'
+            );
+        } finally {
+            saving = false;
+            mutationType = null;
+            updateButtonState();
+        }
     }
-}
 
-cancelButton.addEventListener('click', () => {
-    if (busy) return;
+    form.addEventListener('submit', saveProject);
 
-    resetForm();
-    setMessage('');
-});
+    cancelButton.addEventListener('click', () => {
+        if (loading || saving) {
+            return;
+        }
 
-setBusy(true);
-loadProjects().finally(() => {
-    setBusy(false);
-    renderProjects();
+        setAddMode();
+        showMessage('Edit cancelled. No changes were saved.', 'info');
+    });
+
+    nameInput.addEventListener('input', () => {
+        nameInput.setCustomValidity('');
+    });
+
+    // Start with loading feedback, not a false empty state.
+    render();
+    loadProjects({ showLoading: true });
 });
